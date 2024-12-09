@@ -1,37 +1,40 @@
 readNanoStringGeoMxSet <-
-function(dccFiles,
-         pkcFiles,
-         phenoDataFile,
-         phenoDataSheet,
-         phenoDataDccColName = "Sample_ID",
-         phenoDataColPrefix = "",
-         protocolDataColNames = NULL,
-         experimentDataColNames = NULL,
-         configFile = NULL,
-         analyte = "RNA",
-         defaultPKCVersions = NULL,
-         ...)
-{
-  # check inputs
-  if (!(sum(grepl("\\.dcc$",dccFiles)) == length(dccFiles) && length(dccFiles) > 0L)){
-    stop("Specify valid dcc files." )
-  }
-  if (!(sum(grepl("\\.pkc$",pkcFiles)) == length(pkcFiles) && length(pkcFiles) > 0L)){
-    stop( "Specify valid PKC files." )
-  }
-  # Read data rccFiles
-  data <- structure(lapply(dccFiles, readDccFile), names = basename(dccFiles))
-  
-  # Create assayData
-  assay <- lapply(data, function(x)
-    structure(x[["Code_Summary"]][["Count"]],
-              names = rownames(x[["Code_Summary"]])))
-  
-  # Create phenoData
-  if (is.null(phenoDataFile)) {
-    stop("Please specify an input for phenoDataFile.")
-  } else {
-    pheno <- readxl::read_xlsx(phenoDataFile, col_names = TRUE, sheet = phenoDataSheet, ...)
+  function(dccFiles,
+           pkcFiles,
+           phenoDataFile,
+           phenoDataSheet,
+           phenoDataDccColName = "Sample_ID",
+           phenoDataColPrefix = "",
+           protocolDataColNames = NULL,
+           experimentDataColNames = NULL,
+           configFile = NULL,
+           analyte = "RNA",
+           defaultPKCVersions = NULL,
+           ...)
+  {
+    # check inputs
+    if (!(sum(grepl("\\.dcc$",dccFiles)) == length(dccFiles) && length(dccFiles) > 0L)){
+      stop("Specify valid dcc files." )
+    }
+    if (!(sum(grepl("\\.pkc$",pkcFiles)) == length(pkcFiles) && length(pkcFiles) > 0L)){
+      stop( "Specify valid PKC files." )
+    }
+    # Read data rccFiles
+    data <- structure(lapply(dccFiles, readDccFile), names = basename(dccFiles))
+    
+    # Create assayData
+    assay <- lapply(data, function(x)
+      structure(x[["Code_Summary"]][["Count"]],
+                names = rownames(x[["Code_Summary"]])))
+    
+    # Create phenoData
+    if (is.null(phenoDataFile)) {
+      stop("Please specify an input for phenoDataFile.")
+    } else if (strsplit(phenoDataFile, "\\.")[[1]][2] == 'txt') { 
+      pheno <- read.delim(phenoDataFile, skip = 21, ...)
+    } else {
+      pheno <- readxl::read_xlsx(phenoDataFile, col_names = TRUE, sheet = phenoDataSheet, ...)
+    }
     pheno <- data.frame(pheno, stringsAsFactors = FALSE, check.names = FALSE)
     j <- colnames(pheno)[colnames(pheno) == phenoDataDccColName]
     if (length(j) == 0L){
@@ -128,174 +131,173 @@ function(dccFiles,
     
     pheno <- Biobase::AnnotatedDataFrame(pheno,
                                          dimLabels = c("sampleNames", "sampleColumns"))
-  }
-  
-  #stopifnot(all(sapply(feature, function(x) identical(feature[[1L]], x))))
-  if (is.null(pkcFiles)) {
-    stop("Please specify an input for pkcFiles")
-  } else if (!is.null(pkcFiles)) {
-    pkcData <- readPKCFile(pkcFiles, default_pkc_vers=defaultPKCVersions)
     
-    pkcHeader <- S4Vectors::metadata(pkcData)
-    # pkcHeader[["PKCFileDate"]] <- as.character(pkcHeader[["PKCFileDate"]])
+    #stopifnot(all(sapply(feature, function(x) identical(feature[[1L]], x))))
+    if (is.null(pkcFiles)) {
+      stop("Please specify an input for pkcFiles")
+    } else if (!is.null(pkcFiles)) {
+      pkcData <- readPKCFile(pkcFiles, default_pkc_vers=defaultPKCVersions)
+      
+      pkcHeader <- S4Vectors::metadata(pkcData)
+      # pkcHeader[["PKCFileDate"]] <- as.character(pkcHeader[["PKCFileDate"]])
+      
+      pkcData$RTS_ID <- gsub("RNA", "RTS00", pkcData$RTS_ID)
+      
+      pkcData <- as.data.frame(pkcData)
+      rownames(pkcData) <- pkcData[["RTS_ID"]]
+    }
     
-    pkcData$RTS_ID <- gsub("RNA", "RTS00", pkcData$RTS_ID)
+    probeAssay <- lapply(names(data), function(x)
+      data.frame(data[[x]][["Code_Summary"]],
+                 Sample_ID = x))
+    probeAssay <- do.call(rbind, probeAssay)
+    # check for missing probes in PKC that are in assay
+    missingProbes <- setdiff(unique(probeAssay[["RTS_ID"]]), rownames(pkcData))
+    if (length(missingProbes) > 0L){
+      warning("Not all probes are found within PKC probe metadata.",
+              " The following probes are ignored from analysis",
+              " and were most likely removed from metadata while",
+              " resolving multiple module PKC version conflicts.\n",
+              paste(missingProbes, sep=", "))
+    }
     
-    pkcData <- as.data.frame(pkcData)
-    rownames(pkcData) <- pkcData[["RTS_ID"]]
-  }
-  
-  probeAssay <- lapply(names(data), function(x)
-    data.frame(data[[x]][["Code_Summary"]],
-               Sample_ID = x))
-  probeAssay <- do.call(rbind, probeAssay)
-  # check for missing probes in PKC that are in assay
-  missingProbes <- setdiff(unique(probeAssay[["RTS_ID"]]), rownames(pkcData))
-  if (length(missingProbes) > 0L){
-    warning("Not all probes are found within PKC probe metadata.",
-            " The following probes are ignored from analysis",
-            " and were most likely removed from metadata while",
-            " resolving multiple module PKC version conflicts.\n",
-            paste(missingProbes, sep=", "))
-  }
-  
-  if(!is.null(configFile)){
-    pkcProbes <- compareToConfig(config = configFile, pkcProbes = pkcData, pkcHeader = pkcHeader)
+    if(!is.null(configFile)){
+      pkcProbes <- compareToConfig(config = configFile, pkcProbes = pkcData, pkcHeader = pkcHeader)
+      
+      pkcData <- pkcProbes$pkcData
+      pkcHeader <- pkcProbes$pkcHeader
+      
+      pkcFiles <- paste0(unique(pkcData$Module), ".pkc")
+    }
     
-    pkcData <- pkcProbes$pkcData
-    pkcHeader <- pkcProbes$pkcHeader
+    if(tolower(analyte) == "protein"){
+      analyte <- "Protein"
+    }else if(tolower(analyte) == "rna"){
+      analyte <- "RNA"
+    }
     
-    pkcFiles <- paste0(unique(pkcData$Module), ".pkc")
-  }
-  
-  if(tolower(analyte) == "protein"){
-    analyte <- "Protein"
-  }else if(tolower(analyte) == "rna"){
-    analyte <- "RNA"
-  }
-  
-  pkcs <- names(which(tolower(pkcHeader$AnalyteType) == tolower(analyte)))
-  
-  if(length(pkcs) == 0){
-    stop(paste("Given analyte is not valid: options =", paste(unique(pkcHeader$AnalyteType), collapse = ", ")))
-  }
-  
-  pkcFiles <- paste0(pkcs, ".pkc")
-  
-  pkcData <- pkcData[pkcData$Module %in% pkcs,]
-  for(i in names(pkcHeader)){
-    pkcHeader[[i]] <- pkcHeader[[i]][names(pkcHeader[[i]]) %in% pkcs]
-  }
-  
-  # Handle older assay probe labels
-  if (any(startsWith(pkcData[["RTS_ID"]][1L], "RTS")) &
-      any(startsWith(probeAssay[["RTS_ID"]][1L], "RNA"))) {
-    # replace RNA with RTS00 in probeAssay[["RTS_ID"]]
-    probeAssay[["RTS_ID"]] <- gsub("^RNA", "RTS00", probeAssay[["RTS_ID"]])
-  }
-  
-  probeAssay <- probeAssay[probeAssay[["RTS_ID"]] %in% pkcData[["RTS_ID"]],]
-  
-  zeroProbes <- setdiff(rownames(pkcData), unique(probeAssay[["RTS_ID"]]))
-  zeroProbeAssay <- data.frame(RTS_ID=pkcData[zeroProbes, "RTS_ID"],
-    Count=rep(0, length(zeroProbes)),
-    Sample_ID=rep(probeAssay[1, "Sample_ID"], length(zeroProbes)))
-  probeAssay <- rbind(probeAssay, zeroProbeAssay)
-  probeAssay[["Module"]] <- pkcData[probeAssay[["RTS_ID"]], "Module"]
-  probeAssay <- reshape2::dcast(probeAssay, RTS_ID + Module ~ Sample_ID,
-      value.var="Count", fill=0)
-  rownames(probeAssay) <- probeAssay[, "RTS_ID"]
-  
-  if(!all(names(data) %in% names(probeAssay))){
-    missingAnalyteDCC <- names(data)[which(!names(data) %in% names(probeAssay))]
-    warning("The following DCC files had no counts and will be excluded from the GeoMxSet object: ",
-            paste0(missingAnalyteDCC, sep=", "))
+    pkcs <- names(which(tolower(pkcHeader$AnalyteType) == tolower(analyte)))
     
-    data <- data[which(names(data) %in% names(probeAssay))]
+    if(length(pkcs) == 0){
+      stop(paste("Given analyte is not valid: options =", paste(unique(pkcHeader$AnalyteType), collapse = ", ")))
+    }
     
-    pheno <- pheno[names(data),]
-  }
-  
-  assay <- as.matrix(probeAssay[, names(data)])
-
-  # Create featureData
-  feature <- pkcData[rownames(assay), , drop = FALSE]
-  # change the colnames of feature data to match with dimLabels
-  colnames(feature)[which(colnames(feature)=="Target")] <- "TargetName"
-  feature <- AnnotatedDataFrame(feature,
-                                dimLabels = c("featureNames", "featureColumns"))
-
+    pkcFiles <- paste0(pkcs, ".pkc")
+    
+    pkcData <- pkcData[pkcData$Module %in% pkcs,]
+    for(i in names(pkcHeader)){
+      pkcHeader[[i]] <- pkcHeader[[i]][names(pkcHeader[[i]]) %in% pkcs]
+    }
+    
+    # Handle older assay probe labels
+    if (any(startsWith(pkcData[["RTS_ID"]][1L], "RTS")) &
+        any(startsWith(probeAssay[["RTS_ID"]][1L], "RNA"))) {
+      # replace RNA with RTS00 in probeAssay[["RTS_ID"]]
+      probeAssay[["RTS_ID"]] <- gsub("^RNA", "RTS00", probeAssay[["RTS_ID"]])
+    }
+    
+    probeAssay <- probeAssay[probeAssay[["RTS_ID"]] %in% pkcData[["RTS_ID"]],]
+    
+    zeroProbes <- setdiff(rownames(pkcData), unique(probeAssay[["RTS_ID"]]))
+    zeroProbeAssay <- data.frame(RTS_ID=pkcData[zeroProbes, "RTS_ID"],
+                                 Count=rep(0, length(zeroProbes)),
+                                 Sample_ID=rep(probeAssay[1, "Sample_ID"], length(zeroProbes)))
+    probeAssay <- rbind(probeAssay, zeroProbeAssay)
+    probeAssay[["Module"]] <- pkcData[probeAssay[["RTS_ID"]], "Module"]
+    probeAssay <- reshape2::dcast(probeAssay, RTS_ID + Module ~ Sample_ID,
+                                  value.var="Count", fill=0)
+    rownames(probeAssay) <- probeAssay[, "RTS_ID"]
+    
+    if(!all(names(data) %in% names(probeAssay))){
+      missingAnalyteDCC <- names(data)[which(!names(data) %in% names(probeAssay))]
+      warning("The following DCC files had no counts and will be excluded from the GeoMxSet object: ",
+              paste0(missingAnalyteDCC, sep=", "))
+      
+      data <- data[which(names(data) %in% names(probeAssay))]
+      
+      pheno <- pheno[names(data),]
+    }
+    
+    assay <- as.matrix(probeAssay[, names(data)])
+    
+    # Create featureData
+    feature <- pkcData[rownames(assay), , drop = FALSE]
+    # change the colnames of feature data to match with dimLabels
+    colnames(feature)[which(colnames(feature)=="Target")] <- "TargetName"
+    feature <- AnnotatedDataFrame(feature,
+                                  dimLabels = c("featureNames", "featureColumns"))
+    
     # Create experimentData
     if (!(is.null(experimentDataColNames))) {
-        experimentList <- 
-            lapply(experimentDataColNames,
-                   function(experimentDataColName) {
-                       unique(S4Vectors::na.omit(pheno@data[[experimentDataColName]]))})
-        names(experimentList) <- experimentDataColNames
-        experiment <- 
-            Biobase::MIAME(name = "", 
-                           other = c(experimentList, 
-                                     pkcHeader, 
-                                     list(shiftedByOne=FALSE)))
+      experimentList <- 
+        lapply(experimentDataColNames,
+               function(experimentDataColName) {
+                 unique(S4Vectors::na.omit(pheno@data[[experimentDataColName]]))})
+      names(experimentList) <- experimentDataColNames
+      experiment <- 
+        Biobase::MIAME(name = "", 
+                       other = c(experimentList, 
+                                 pkcHeader, 
+                                 list(shiftedByOne=FALSE)))
     } else {
-        experiment <- 
-            Biobase::MIAME(name = "",
-                           other = c(pkcHeader, 
-                                     list(shiftedByOne=FALSE)))
+      experiment <- 
+        Biobase::MIAME(name = "",
+                       other = c(pkcHeader, 
+                                 list(shiftedByOne=FALSE)))
     }
-
+    
     # Create annotation
     annotation <- sort(sapply(strsplit(pkcFiles, "/"), function(x) x[length(x)]))
     if(!identical(annotation, paste0(sort(unique(probeAssay[["Module"]])), ".pkc"))) {
-        stop("Name mismatch between pool and PKC files")
+      stop("Name mismatch between pool and PKC files")
     }
-
-  # Create protocolData
-  protocol <-
-    do.call(dplyr::bind_rows,
-            lapply(names(data), function(i) {
-              cbind(data[[i]][["Header"]], data[[i]][["Scan_Attributes"]],
-                    data[[i]][["NGS_Processing_Attributes"]])
-            }))
-
-  
-  protocol <- data.frame(protocol,
-                         pheno@data[, which(colnames(pheno@data) %in% protocolDataColNames)],
-                         check.names = FALSE)
-
-  pheno <- pheno[, setdiff(colnames(pheno@data),
-                           c(protocolDataColNames, experimentDataColNames))]
-
-  annot_labelDescription <-
-    data.frame(
-      labelDescription=rep(NA_character_, length(protocolDataColNames) + 1L),
-      row.names = c(protocolDataColNames, "DeduplicatedReads"),
-      stringsAsFactors = FALSE)
-  protocol <-
-    protocol[, names(protocol) %in% c(rownames(.dccMetadata[["protocolData"]]),
-                                      rownames(annot_labelDescription))]
-  protocol <- AnnotatedDataFrame(protocol,
-                                 rbind(.dccMetadata[["protocolData"]],
-                                       annot_labelDescription),
-                                 dimLabels = c("sampleNames", "sampleColumns"))
-  
-  # Create NanoStringGeoMxSet
-  GxT <- NanoStringGeoMxSet(assayData = assay,
-                            phenoData = pheno,
-                            featureData = feature,
-                            experimentData = experiment,
-                            annotation = annotation,
-                            protocolData = protocol,
-                            check = FALSE, 
-                            dimLabels = c("RTS_ID", "SampleID"),
-                            analyte = analyte)
-  
-  if(analyte(GxT) == "Protein"){
-    GxT <- suppressWarnings(aggregateCounts(GxT))
+    
+    # Create protocolData
+    protocol <-
+      do.call(dplyr::bind_rows,
+              lapply(names(data), function(i) {
+                cbind(data[[i]][["Header"]], data[[i]][["Scan_Attributes"]],
+                      data[[i]][["NGS_Processing_Attributes"]])
+              }))
+    
+    
+    protocol <- data.frame(protocol,
+                           pheno@data[, which(colnames(pheno@data) %in% protocolDataColNames)],
+                           check.names = FALSE)
+    
+    pheno <- pheno[, setdiff(colnames(pheno@data),
+                             c(protocolDataColNames, experimentDataColNames))]
+    
+    annot_labelDescription <-
+      data.frame(
+        labelDescription=rep(NA_character_, length(protocolDataColNames) + 1L),
+        row.names = c(protocolDataColNames, "DeduplicatedReads"),
+        stringsAsFactors = FALSE)
+    protocol <-
+      protocol[, names(protocol) %in% c(rownames(.dccMetadata[["protocolData"]]),
+                                        rownames(annot_labelDescription))]
+    protocol <- AnnotatedDataFrame(protocol,
+                                   rbind(.dccMetadata[["protocolData"]],
+                                         annot_labelDescription),
+                                   dimLabels = c("sampleNames", "sampleColumns"))
+    
+    # Create NanoStringGeoMxSet
+    GxT <- NanoStringGeoMxSet(assayData = assay,
+                              phenoData = pheno,
+                              featureData = feature,
+                              experimentData = experiment,
+                              annotation = annotation,
+                              protocolData = protocol,
+                              check = FALSE, 
+                              dimLabels = c("RTS_ID", "SampleID"),
+                              analyte = analyte)
+    
+    if(analyte(GxT) == "Protein"){
+      GxT <- suppressWarnings(aggregateCounts(GxT))
+    }
+    
+    return(GxT)
   }
-  
-  return(GxT)
-}
 
 #' Compare given PKC probes to probes in config file
 #' 
